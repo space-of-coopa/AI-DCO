@@ -1,4 +1,12 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
 from ultralytics import YOLO
+from scipy.spatial import distance
+
+def hex_to_rgb(hex_color):
+    hex_color = hex_color.lstrip('#')
+    return np.array([int(hex_color[i:i+2], 16) for i in (0, 2, 4)])
 
 def is_in_center(bbox, img_width, img_height, center_fraction=0.5):
     x_center = (bbox[0] + bbox[2]) / 2
@@ -11,20 +19,57 @@ def is_in_center(bbox, img_width, img_height, center_fraction=0.5):
 
     return center_x_min <= x_center <= center_x_max and center_y_min <= y_center <= center_y_max
 
-def detect_center_objects(image_path, model_path='yolov8n.pt', center_fraction=0.5):
+def get_dominant_color(image, bbox):
+    x1, y1, x2, y2 = map(int, bbox)
+    cropped_img = image[y1:y2, x1:x2]
+    cropped_img = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2RGB)
+
+    pixels = np.float32(cropped_img.reshape(-1, 3))
+    n_colors = 1
+    _, labels, palette = cv2.kmeans(pixels, n_colors, None,
+                                    criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.2),
+                                    attempts=10, flags=cv2.KMEANS_RANDOM_CENTERS)
+    dominant_color = palette[0].astype(int)
+    return dominant_color
+
+def detect_and_show_similar_color_objects(image_path, hex_color, model_path='yolov8n.pt', center_fraction=0.5):
+    target_color = hex_to_rgb(hex_color)
+
     model = YOLO(model_path)
     results = model(image_path)
 
     img = results[0].orig_img
     img_height, img_width, _ = img.shape
 
-    center_objects = []
-    for bbox in results[0].boxes.xyxy:  # 바운딩 박스 좌표
+    fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+    ax.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+
+    closest_color = None
+    closest_bbox = None
+    min_dist = float('inf')
+
+    for bbox in results[0].boxes.xyxy:
         if is_in_center(bbox, img_width, img_height, center_fraction):
-            center_objects.append(bbox)
+            dominant_color = get_dominant_color(img, bbox)
+            dist = distance.euclidean(dominant_color, target_color)
+            if dist < min_dist:
+                min_dist = dist
+                closest_color = dominant_color
+                closest_bbox = bbox
 
-    return center_objects
+    if closest_bbox is not None:
+        rect = plt.Rectangle(
+            (closest_bbox[0], closest_bbox[1]),
+            closest_bbox[2] - closest_bbox[0],
+            closest_bbox[3] - closest_bbox[1],
+            fill=False,
+            color='red',
+            linewidth=2
+        )
+        ax.add_patch(rect)
+        print(f"Closest color found: {closest_color} with distance {min_dist}")
 
-# 사용 예시
-center_objects = detect_center_objects('./InputImage/InputImage.jpg', center_fraction=0.5)
-print("Central objects:", center_objects)
+    plt.show()
+
+hex_color = '#DAC5D6'
+detect_and_show_similar_color_objects('InputImage/InputImage.jpg', hex_color, center_fraction=0.5)
