@@ -67,7 +67,15 @@ def detect_and_show_similar_color_objects(image_path, hex_color, model, center_f
             linewidth=2
         )
         ax.add_patch(rect)
+
+        # 박스 위치 및 크기 정보 표기
+        bbox_width = closest_bbox[2] - closest_bbox[0]
+        bbox_height = closest_bbox[3] - closest_bbox[1]
+        bbox_info = f"Pos: ({closest_bbox[0]:.1f}, {closest_bbox[1]:.1f}) Size: ({bbox_width:.1f}, {bbox_height:.1f})"
+        ax.text(closest_bbox[0], closest_bbox[1] - 10, bbox_info, color='red', fontsize=10, weight='bold')
+
         print(f"Closest color found: {closest_color} with distance {min_dist}")
+        print(bbox_info)
 
     plt.show()
 
@@ -82,5 +90,5 @@ def process_images_in_folder(folder_path, hex_color, model_path='yolov8n.pt', ce
 
 # 사용 예시
 hex_color = '#DAC5D6'
-folder_path = 'InputImage'
+folder_path = 'InputImage'  # 이미지들이 저장된 폴더 경로
 process_images_in_folder(folder_path, hex_color)
