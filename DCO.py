@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
+import os
 from ultralytics import YOLO
 from scipy.spatial import distance
 
@@ -32,10 +33,9 @@ def get_dominant_color(image, bbox):
     dominant_color = palette[0].astype(int)
     return dominant_color
 
-def detect_and_show_similar_color_objects(image_path, hex_color, model_path='yolov8n.pt', center_fraction=0.5):
+def detect_and_show_similar_color_objects(image_path, hex_color, model, center_fraction=0.5):
     target_color = hex_to_rgb(hex_color)
 
-    model = YOLO(model_path)
     results = model(image_path)
 
     img = results[0].orig_img
@@ -71,5 +71,16 @@ def detect_and_show_similar_color_objects(image_path, hex_color, model_path='yol
 
     plt.show()
 
+def process_images_in_folder(folder_path, hex_color, model_path='yolov8n.pt', center_fraction=0.5):
+    model = YOLO(model_path)
+    image_files = [f for f in os.listdir(folder_path) if f.endswith(('.jpg', '.png', '.jpeg'))]
+
+    for image_file in image_files:
+        image_path = os.path.join(folder_path, image_file)
+        print(f"Processing {image_path}...")
+        detect_and_show_similar_color_objects(image_path, hex_color, model, center_fraction)
+
+# 사용 예시
 hex_color = '#DAC5D6'
-detect_and_show_similar_color_objects('InputImage/InputImage.jpg', hex_color, center_fraction=0.5)
+folder_path = 'InputImage'
+process_images_in_folder(folder_path, hex_color)
