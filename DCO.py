@@ -1,9 +1,7 @@
+import os
 import cv2
 import numpy as np
-import matplotlib.pyplot as plt
-import os
 from ultralytics import YOLO
-from scipy.spatial import distance
 
 def hex_to_rgb(hex_color):
     hex_color = hex_color.lstrip('#')
@@ -33,62 +31,78 @@ def get_dominant_color(image, bbox):
     dominant_color = palette[0].astype(int)
     return dominant_color
 
-def detect_and_show_similar_color_objects(image_path, hex_color, model, center_fraction=0.5):
+def save_yolo_label(output_file_path, class_id, bbox, img_width, img_height):
+    # 바운딩 박스 좌표를 YOLO 포맷으로 변환
+    x_min, y_min, x_max, y_max = bbox
+    center_x = (x_min + x_max) / 2 / img_width
+    center_y = (y_min + y_max) / 2 / img_height
+    bbox_width = (x_max - x_min) / img_width
+    bbox_height = (y_max - y_min) / img_height
+
+    # YOLO 포맷으로 라벨 정보 작성
+    with open(output_file_path, 'w') as f:
+        f.write(f"{class_id} {center_x:.6f} {center_y:.6f} {bbox_width:.6f} {bbox_height:.6f}\n")
+
+def show_image_with_bbox(image, bbox, image_path, class_id, img_width, img_height, output_dir="bbox"):
+    x_min, y_min, x_max, y_max = map(int, bbox)
+    bbox_width = x_max - x_min
+    bbox_height = y_max - y_min
+
+    cv2.rectangle(image, (x_min, y_min), (x_max, y_max), (255, 0, 0), 4)  # 빨간색, 두께 4
+    info_text = f"Class: {class_id}, Pos: ({x_min}, {y_min}), Size: ({bbox_width}, {bbox_height})"
+    text_position = (x_min, y_min - 10 if y_min - 10 > 10 else y_min + 10)
+    cv2.putText(image, info_text, text_position, cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)  # 노란색, 두께 2
+    os.makedirs(output_dir, exist_ok=True)
+    output_file = os.path.join(output_dir, f"{os.path.splitext(os.path.basename(image_path))[0]}_bbox.png")
+    cv2.imwrite(output_file, image)
+    print(f"Image with bbox saved as {output_file}")
+
+def detect_and_save_labels(image_path, hex_color, model, output_dir, img_width, img_height, class_id=3, center_fraction=0.5):
     target_color = hex_to_rgb(hex_color)
-
     results = model(image_path)
-
     img = results[0].orig_img
-    img_height, img_width, _ = img.shape
 
-    fig, ax = plt.subplots(1, 1, figsize=(12, 8))
-    ax.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-
-    closest_color = None
     closest_bbox = None
     min_dist = float('inf')
 
     for bbox in results[0].boxes.xyxy:
         if is_in_center(bbox, img_width, img_height, center_fraction):
             dominant_color = get_dominant_color(img, bbox)
-            dist = distance.euclidean(dominant_color, target_color)
+            dist = np.linalg.norm(dominant_color - target_color)
             if dist < min_dist:
                 min_dist = dist
-                closest_color = dominant_color
                 closest_bbox = bbox
 
     if closest_bbox is not None:
-        rect = plt.Rectangle(
-            (closest_bbox[0], closest_bbox[1]),
-            closest_bbox[2] - closest_bbox[0],
-            closest_bbox[3] - closest_bbox[1],
-            fill=False,
-            color='red',
-            linewidth=2
-        )
-        ax.add_patch(rect)
+        output_filename = os.path.splitext(os.path.basename(image_path))[0]
+        output_file_path = os.path.join(output_dir, f"{output_filename}.txt")
+        save_yolo_label(output_file_path, class_id, closest_bbox, img_width, img_height)
+        print(f"Saved label for {image_path} as {output_file_path}")
+        show_image_with_bbox(img, closest_bbox, image_path, class_id, img_width, img_height, output_dir="bbox")
 
-        # 박스 위치 및 크기 정보 표기
-        bbox_width = closest_bbox[2] - closest_bbox[0]
-        bbox_height = closest_bbox[3] - closest_bbox[1]
-        bbox_info = f"Pos: ({closest_bbox[0]:.1f}, {closest_bbox[1]:.1f}) Size: ({bbox_width:.1f}, {bbox_height:.1f})"
-        ax.text(closest_bbox[0], closest_bbox[1] - 10, bbox_info, color='red', fontsize=10, weight='bold')
+        return True  # 라벨이 생성됨
 
-        print(f"Closest color found: {closest_color} with distance {min_dist}")
-        print(bbox_info)
+    return False  # 라벨이 생성되지 않음
 
-    plt.show()
-
-def process_images_in_folder(folder_path, hex_color, model_path='yolov8n.pt', center_fraction=0.5):
+def process_images_in_folder(folder_path, hex_color, output_dir, model_path='yolov8n.pt', class_id=3, img_width=4000, img_height=3000, center_fraction=0.5):
     model = YOLO(model_path)
-    image_files = [f for f in os.listdir(folder_path) if f.endswith(('.jpg', '.png', '.jpeg'))]
+    image_files = sorted([f for f in os.listdir(folder_path) if f.endswith(('.jpg', '.png', '.jpeg'))])
+
+    os.makedirs(output_dir, exist_ok=True)
 
     for image_file in image_files:
         image_path = os.path.join(folder_path, image_file)
         print(f"Processing {image_path}...")
-        detect_and_show_similar_color_objects(image_path, hex_color, model, center_fraction)
+        label_created = detect_and_save_labels(image_path, hex_color, model, output_dir, img_width, img_height, class_id, center_fraction)
 
-# 사용 예시
+        if not label_created:
+            os.remove(image_path)  # 라벨이 없으면 이미지 삭제
+            print(f"Deleted image {image_path} because no label was created.")
+
+    print("All images processed.")
+
 hex_color = '#DAC5D6'
-folder_path = 'InputImage'  # 이미지들이 저장된 폴더 경로
-process_images_in_folder(folder_path, hex_color)
+folder_path = 'InputImage'
+output_dir = 'OutputLabels'
+
+process_images_in_folder(folder_path, hex_color, output_dir, class_id=3, img_width=4000, img_height=3000)
