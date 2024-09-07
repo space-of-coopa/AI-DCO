@@ -1,108 +1,120 @@
 import os
 import cv2
 import numpy as np
+import torch
 from ultralytics import YOLO
+from concurrent.futures import ThreadPoolExecutor
 
 def hex_to_rgb(hex_color):
+    """16진수 색상 코드를 RGB로 변환합니다."""
     hex_color = hex_color.lstrip('#')
     return np.array([int(hex_color[i:i+2], 16) for i in (0, 2, 4)])
 
+def draw_and_save_box(image_path, boxes, output_path):
+    """이미지에 바운딩 박스를 그려서 저장합니다."""
+    image = cv2.imread(image_path)
+    if image is None:
+        print(f"Error: Image file '{image_path}' not found.")
+        return
+
+    for bbox in boxes:
+        x1, y1, x2, y2 = bbox
+        top_left = (int(x1), int(y1))
+        bottom_right = (int(x2), int(y2))
+
+        cv2.rectangle(image, top_left, bottom_right, (0, 255, 0), 2)
+
+    cv2.imwrite(output_path, image)
+    print(f"Image saved with boxes at: {output_path}")
+
+def save_yolo_format(image_path, boxes, output_txt_path):
+    """YOLOv8 포맷으로 바운딩 박스 정보를 텍스트 파일에 저장합니다."""
+    image = cv2.imread(image_path)
+    if image is None:
+        print(f"Error: Image file '{image_path}' not found.")
+        return
+
+    img_height, img_width = image.shape[:2]
+    with open(output_txt_path, 'w') as f:
+        for bbox in boxes:
+            x1, y1, x2, y2 = bbox
+            x_center = (x1 + x2) / 2 / img_width
+            y_center = (y1 + y2) / 2 / img_height
+            width = (x2 - x1) / img_width
+            height = (y2 - y1) / img_height
+
+            # Assuming class_id = 0 for all boxes; modify if class_id is available
+            class_id = 0
+            f.write(f"{class_id} {x_center} {y_center} {width} {height}\n")
+
+    print(f"YOLO format annotations saved at: {output_txt_path}")
+
 def is_in_center(bbox, img_width, img_height, center_fraction=0.5):
+    """바운딩 박스가 이미지 중심에 있는지 확인합니다."""
     x_center = (bbox[0] + bbox[2]) / 2
     y_center = (bbox[1] + bbox[3]) / 2
 
-    center_x_min = img_width * (1 - center_fraction) / 2
-    center_x_max = img_width * (1 + center_fraction) / 2
-    center_y_min = img_height * (1 - center_fraction) / 2
-    center_y_max = img_height * (1 + center_fraction) / 2
+    center_x_start = img_width * (1 - center_fraction) / 2
+    center_x_end = img_width * (1 + center_fraction) / 2
+    center_y_start = img_height * (1 - center_fraction) / 2
+    center_y_end = img_height * (1 + center_fraction) / 2
 
-    return center_x_min <= x_center <= center_x_max and center_y_min <= y_center <= center_y_max
+    return center_x_start <= x_center <= center_x_end and center_y_start <= y_center <= center_y_end
 
-def get_dominant_color(image, bbox):
-    x1, y1, x2, y2 = map(int, bbox)
-    cropped_img = image[y1:y2, x1:x2]
-    cropped_img = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2RGB)
+def process_image(image_path, model, output_image_path, output_txt_path):
+    """이미지를 처리하고 바운딩 박스를 그려 저장하며 YOLO 포맷으로 주석을 저장합니다."""
+    try:
+        results = model.predict(image_path)
+        boxes = results[0].boxes.xyxy.cpu().numpy()
 
-    pixels = np.float32(cropped_img.reshape(-1, 3))
-    n_colors = 1
-    _, labels, palette = cv2.kmeans(pixels, n_colors, None,
-                                    criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.2),
-                                    attempts=10, flags=cv2.KMEANS_RANDOM_CENTERS)
-    dominant_color = palette[0].astype(int)
-    return dominant_color
+        # 이미지 크기 가져오기
+        image = cv2.imread(image_path)
+        if image is None:
+            print(f"Error: Image file '{image_path}' not found.")
+            return
+        img_height, img_width = image.shape[:2]
 
-def save_yolo_label(output_file_path, class_id, bbox, img_width, img_height):
-    # 바운딩 박스 좌표를 YOLO 포맷으로 변환
-    x_min, y_min, x_max, y_max = bbox
-    center_x = (x_min + x_max) / 2 / img_width
-    center_y = (y_min + y_max) / 2 / img_height
-    bbox_width = (x_max - x_min) / img_width
-    bbox_height = (y_max - y_min) / img_height
+        # 디버깅: 모델이 인식한 바운딩 박스 출력
+        print(f"Detected boxes for '{image_path}': {boxes}")
 
-    # YOLO 포맷으로 라벨 정보 작성
-    with open(output_file_path, 'w') as f:
-        f.write(f"{class_id} {center_x:.6f} {center_y:.6f} {bbox_width:.6f} {bbox_height:.6f}\n")
+        # 중심에 있는 바운딩 박스만 선택
+        center_boxes = [box for box in boxes if is_in_center(box, img_width, img_height)]
+        print(f"Boxes in center for '{image_path}': {center_boxes}")
 
-def show_image_with_bbox(image, bbox, image_path, class_id, img_width, img_height, output_dir="bbox"):
-    x_min, y_min, x_max, y_max = map(int, bbox)
-    bbox_width = x_max - x_min
-    bbox_height = y_max - y_min
+        if len(center_boxes) > 0:
+            # 바운딩 박스 그리기 및 저장
+            draw_and_save_box(image_path, center_boxes, output_image_path)
+            # YOLO 포맷 주석 저장
+            save_yolo_format(image_path, center_boxes, output_txt_path)
+        else:
+            # 빈 이미지와 라벨 파일 삭제
+            if os.path.exists(image_path):
+                os.remove(image_path)
+            if os.path.exists(output_image_path):
+                os.remove(output_image_path)
+            if os.path.exists(output_txt_path):
+                os.remove(output_txt_path)
+            print(f"Deleted empty files for '{image_path}'.")
 
-    cv2.rectangle(image, (x_min, y_min), (x_max, y_max), (255, 0, 0), 4)  # 빨간색, 두께 4
-    info_text = f"Class: {class_id}, Pos: ({x_min}, {y_min}), Size: ({bbox_width}, {bbox_height})"
-    text_position = (x_min, y_min - 10 if y_min - 10 > 10 else y_min + 10)
-    cv2.putText(image, info_text, text_position, cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)  # 노란색, 두께 2
-    os.makedirs(output_dir, exist_ok=True)
-    output_file = os.path.join(output_dir, f"{os.path.splitext(os.path.basename(image_path))[0]}_bbox.png")
-    cv2.imwrite(output_file, image)
-    print(f"Image with bbox saved as {output_file}")
+    except Exception as e:
+        print(f"Error processing image '{image_path}': {e}")
 
-def detect_and_save_labels(image_path, hex_color, model, output_dir, img_width, img_height, class_id=3, center_fraction=0.5):
-    target_color = hex_to_rgb(hex_color)
-    results = model(image_path)
-    img = results[0].orig_img
+if __name__ == '__main__':
+    input_folder = './InputImage'
+    output_folder = './output_images'
+    os.makedirs(output_folder, exist_ok=True)
 
-    closest_bbox = None
-    min_dist = float('inf')
+    # YOLO 모델 로드
+    model = YOLO('yolov8n.pt')  # 더 가벼운 모델로 바꿀 수 있음
 
-    for bbox in results[0].boxes.xyxy:
-        if is_in_center(bbox, img_width, img_height, center_fraction):
-            dominant_color = get_dominant_color(img, bbox)
-            dist = np.linalg.norm(dominant_color - target_color)
-            if dist < min_dist:
-                min_dist = dist
-                closest_bbox = bbox
+    # GPU 가속 설정
+    model.to('mps' if torch.backends.mps.is_available() else 'cpu')
 
-    if closest_bbox is not None:
-        output_filename = os.path.splitext(os.path.basename(image_path))[0]
-        output_file_path = os.path.join(output_dir, f"{output_filename}.txt")
-        save_yolo_label(output_file_path, class_id, closest_bbox, img_width, img_height)
-        print(f"Saved label for {image_path} as {output_file_path}")
-        show_image_with_bbox(img, closest_bbox, image_path, class_id, img_width, img_height, output_dir="bbox")
-
-        return True  # 라벨이 생성됨
-
-    return False  # 라벨이 생성되지 않음
-
-def process_images_in_folder(folder_path, hex_color, output_dir, model_path='yolov8n.pt', class_id=3, img_width=4000, img_height=3000, center_fraction=0.5):
-    model = YOLO(model_path)
-    image_files = sorted([f for f in os.listdir(folder_path) if f.endswith(('.jpg', '.png', '.jpeg'))])
-
-    os.makedirs(output_dir, exist_ok=True)
-
-    for image_file in image_files:
-        image_path = os.path.join(folder_path, image_file)
-        print(f"Processing {image_path}...")
-        label_created = detect_and_save_labels(image_path, hex_color, model, output_dir, img_width, img_height, class_id, center_fraction)
-
-        if not label_created:
-            os.remove(image_path)  # 라벨이 없으면 이미지 삭제
-            print(f"Deleted image {image_path} because no label was created.")
-
-    print("All images processed.")
-
-hex_color = '#DAC5D6'
-folder_path = 'InputImage'
-output_dir = 'OutputLabels'
-
-process_images_in_folder(folder_path, hex_color, output_dir, class_id=3, img_width=4000, img_height=3000)
+    # 모든 이미지 처리
+    with ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
+        for image_file in os.listdir(input_folder):
+            if image_file.endswith(('.jpg', '.png', '.jpeg')):
+                image_path = os.path.join(input_folder, image_file)
+                output_image_path = os.path.join(output_folder, f"boxed_{image_file}")
+                output_txt_path = os.path.join(output_folder, f"{os.path.splitext(image_file)[0]}.txt")
+                executor.submit(process_image, image_path, model, output_image_path, output_txt_path)
